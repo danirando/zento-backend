@@ -18,13 +18,19 @@ class RedirectIfAuthenticated
     public function handle(Request $request, Closure $next, string ...$guards): Response
     {
         $guards = empty($guards) ? [null] : $guards;
-
+    
         foreach ($guards as $guard) {
             if (Auth::guard($guard)->check()) {
+                // Se la richiesta arriva da React (Axios), restituisci JSON, non un redirect
+                if ($request->expectsJson()) {
+                    return response()->json(['message' => 'Already authenticated.'], 200);
+                }
+    
+                // Comportamento standard per richieste browser dirette
                 return redirect(RouteServiceProvider::HOME);
             }
         }
-
+    
         return $next($request);
     }
 }

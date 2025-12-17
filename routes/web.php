@@ -18,22 +18,23 @@ Route::get('/', function () {
 });
 */
 
-// 1. Root Route (Carica l'applicazione React)
-// Quando l'utente naviga su /, carichiamo la vista principale (di solito resources/views/app.blade.php o welcome.blade.php)
-// che contiene il file Javascript di Vite.
+// 1. Root Route.
+// In questo progetto il frontend React gira su Vite (porta 5173), quindi possiamo
+// servire semplicemente la vista di default di Laravel invece di una view "app" inesistente.
 Route::get('/', function () {
-    // Assumi che il nome del tuo file Blade sia 'app' (o 'welcome' se non lo hai cambiato)
-    return view('app'); 
+    return view('welcome');
 });
 
 
-// 2. Rotte di Autenticazione (se decidi di mantenerle, anche se Sanctum è gestito via API)
-// require __DIR__.'/auth.php';
+// 2. Rotte di Autenticazione Laravel (login, register, logout, ecc.)
+//    Usiamo le route generate da Breeze/Fortify invece di un controller inesistente.
+require __DIR__.'/auth.php';
 
 
-// 3. CATCH-ALL FALLBACK (CRUCIALE PER LA SPA)
-// Tutte le richieste che non corrispondono alle rotte API (definite in routes/api.php)
-// o alle rotte web esplicite, vengono reindirizzate alla vista principale React.
-// Questo previene gli errori 404 di Laravel quando React gestisce il routing (es. /dashboard).
-Route::view('/{any}', 'app') // Usa 'app' come nome della tua vista Blade che carica React
-    ->where('any', '.*');
+// 3. (Opzionale) Catch‑all per rotte non trovate.
+// Per ora lo disattiviamo per evitare l'errore "View [app] not found" su /dashboard.
+// Se in futuro vorrai far servire a Laravel anche il frontend, potrai
+// ripristinare una Route::view con una view effettivamente esistente.
+// Route::view('/{any}', 'welcome')->where('any', '.*');
+
+// Le rotte /login e /register sono ora definite in routes/auth.php.
