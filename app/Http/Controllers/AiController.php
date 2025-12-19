@@ -55,14 +55,14 @@ class AiController extends Controller
             ], 500);
         }
 
-        $model = 'gemini-3-flash-preview'; 
+        $model = 'gemini-flash-latest'; 
         $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
         try {
-            // 2. Chiamata API per la risposta
+            // 2. Chiamata API per la risposta con TIMEOUT per evitare crash
             $response = Http::withHeaders([
                 'Content-Type' => 'application/json',
-            ])->post($url, [
+            ])->timeout(30)->post($url, [
                 'contents' => [
                     ['parts' => [['text' => $prompt]]]
                 ]
@@ -77,8 +77,14 @@ class AiController extends Controller
 
                 if ($status === 429) {
                     return response()->json([
-                        'error' => 'Limite di richieste raggiunto (Quota Exceeded). Riprova tra qualche secondo. Dettaglio: ' . $errorMessage,
+                        'error' => 'Limite di richieste raggiunto (Quota Exceeded). Riprova tra qualche secondo.',
                     ], 429);
+                }
+
+                if ($status === 404) {
+                    return response()->json([
+                        'error' => 'Modello non trovato. Verificare la configurazione del controller.',
+                    ], 500);
                 }
 
                 return response()->json([
@@ -97,12 +103,14 @@ class AiController extends Controller
                 'content' => $responseText,
             ]);
 
-            // 5. Generazione del titolo se è una nuova conversazione
+            // 5. Generazione del titolo SOLO per le nuove conversazioni per risparmiare quota API
             if ($isNewConversation) {
                 try {
                     $titlePrompt = "Genera un titolo brevissimo (massimo 5 parole) per questa conversazione basato su questo messaggio: \"{$prompt}\". Rispondi SOLO con il titolo, senza virgolette o punteggiatura inutile.";
                     
-                    $titleResponse = Http::post($url, [
+                    $titleResponse = Http::withHeaders([
+                        'Content-Type' => 'application/json',
+                    ])->timeout(15)->post($url, [
                         'contents' => [
                             ['parts' => [['text' => $titlePrompt]]]
                         ]
@@ -114,7 +122,9 @@ class AiController extends Controller
                         $conversation->update(['title' => trim($generatedTitle)]);
                     }
                 } catch (\Exception $e) {
-                    Log::warning('Errore generazione titolo:', ['msg' => $e->getMessage()]);
+                    Log::warning('Errore generazione titolo (non riproveremo per questa chat):', ['msg' => $e->getMessage()]);
+                    // Se fallisce una volta, evitiamo di riprovare sui messaggi successivi per non sprecare quota
+                    $conversation->update(['title' => 'Conversazione']);
                 }
             }
 
@@ -124,10 +134,15 @@ class AiController extends Controller
                 'title' => $conversation->title,
             ]);
 
-        } catch (\Exception $e) {
-            Log::error('Errore comunicazione con AI:', ['exception' => $e->getMessage()]);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            Log::error('Timeout comunicazione con AI:', ['exception' => $e->getMessage()]);
             return response()->json([
-                'error' => 'Errore interno del server.',
+                'error' => 'Il servizio AI ha impiegato troppo tempo a rispondere. Riprova tra poco.',
+            ], 504);
+        } catch (\Exception $e) {
+            Log::error('Errore imprevisto AiController:', ['exception' => $e->getMessage()]);
+            return response()->json([
+                'error' => 'Si è verificato un errore interno nel processare la richiesta.',
             ], 500);
         }
     }
