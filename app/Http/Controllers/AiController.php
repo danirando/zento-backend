@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ChatMessage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log; // Aggiunto per un miglior logging
@@ -19,6 +20,14 @@ class AiController extends Controller
         ]);
 
         $prompt = $request->input('message');
+        $user = $request->user();
+
+        // 1.5 Salvataggio del messaggio dell'utente nel database
+        ChatMessage::create([
+            'user_id' => $user->id,
+            'role' => 'user',
+            'content' => $prompt,
+        ]);
         $apiKey = env('GEMINI_API_KEY');
 
         if (!$apiKey) {
@@ -29,16 +38,14 @@ class AiController extends Controller
             ], 500);
         }
 
-        // Definiamo il modello e l'endpoint
-        $model = 'gemini-2.5-flash'; // Consiglio un modello più recente se possibile
-        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent";
+        // Definiamo il modello e l'endpoint (Aggiornato a Gemini 3 Flash Preview)
+        $model = 'gemini-3-flash-preview'; 
+        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
         try {
-            // 2. Chiamata API con la chiave negli Headers (metodo più comune)
+            // 2. Chiamata API
             $response = Http::withHeaders([
                 'Content-Type' => 'application/json',
-                // Preferiamo inviare la chiave come Authorization Header
-                'x-goog-api-key' => $apiKey, 
             ])->post($url, [
                 'contents' => [
                     [
@@ -49,12 +56,24 @@ class AiController extends Controller
                 ]
             ]);
 
-            // 3. Gestione degli errori HTTP generici
+            // 3. Gestione degli errori dall'API Gemini
             if ($response->failed()) {
                 Log::error('Errore API Gemini:', ['body' => $response->body(), 'status' => $response->status()]);
+                
+                $status = $response->status();
+                $errorMessage = $response->json('error.message', 'Errore sconosciuto');
+
+                // Se l'errore è un 429 (Too Many Requests), lo passiamo al frontend con un messaggio chiaro.
+                if ($status === 429) {
+                    return response()->json([
+                        'error' => 'Limite di richieste raggiunto (Rate Limit). Riprova tra un momento. Dettagli: ' . $errorMessage,
+                    ], 429);
+                }
+
+                // Per altri errori, restituiamo 502 (Bad Gateway) per indicare un problema col servizio esterno.
                 return response()->json([
-                    'error' => 'Errore API Gemini. Dettagli: ' . $response->json('error.message', 'Errore sconosciuto'),
-                ], $response->status());
+                    'error' => 'Il servizio AI ha risposto con un errore (' . $status . '). Dettagli: ' . $errorMessage,
+                ], 502); 
             }
 
             $data = $response->json();
@@ -74,6 +93,13 @@ class AiController extends Controller
 
             $responseText = $candidates[0]['content']['parts'][0]['text'] ?? 'Nessuna risposta testuale ricevuta.';
 
+            // 4.5 Salvataggio della risposta dell'AI nel database
+            ChatMessage::create([
+                'user_id' => $user->id,
+                'role' => 'assistant',
+                'content' => $responseText,
+            ]);
+
             // 5. Correzione CRITICA per il Frontend React
             // Il frontend si aspetta 'reply', non 'response'.
             return response()->json([
@@ -86,5 +112,37 @@ class AiController extends Controller
                 'error' => 'Errore interno del server: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Recupera la cronologia delle chat per l'utente loggato.
+     * Al momento restituisce una lista vuota o dati di mock.
+     */
+    public function history(Request $request)
+    {
+        // Recuperiamo i messaggi dal database per l'utente loggato.
+        $history = $request->user()->chatMessages()
+            ->orderBy('created_at', 'asc')
+            ->get(['role', 'content as text', 'created_at']);
+
+        return response()->json([
+            'history' => $history,
+            'message' => 'Cronologia caricata con successo.'
+        ]);
+    }
+
+    /**
+     * Elimina tutta la cronologia delle chat dell'utente.
+     */
+    public function destroyHistory(Request $request)
+    {
+        $user = $request->user();
+        
+        // Eliminiamo tutti i messaggi associati all'utente
+        $user->chatMessages()->delete();
+
+        return response()->json([
+            'message' => 'Cronologia eliminata correttamente.'
+        ]);
     }
 }

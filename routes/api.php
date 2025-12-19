@@ -40,6 +40,13 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     // Rotta per la Chat AI (POST /chat)
     Route::post('/chat', [AiController::class, 'chat']);
+
+    // Rotta per la Cronologia delle Chat (GET /chat/history)
+    // Risolve l'errore 404 segnalato nel frontend.
+    Route::get('/chat/history', [AiController::class, 'history']);
+
+    // Rotta per eliminare la Cronologia delle Chat (DELETE /chat/history)
+    Route::delete('/chat/history', [AiController::class, 'destroyHistory']);
     
     // Rotta per il Logout (POST /logout)
     Route::post('/logout', [AuthApiController::class, 'logout']);
