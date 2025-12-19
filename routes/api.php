@@ -42,8 +42,10 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/chat', [AiController::class, 'chat']);
 
     // Rotta per la Cronologia delle Chat (GET /chat/history)
-    // Risolve l'errore 404 segnalato nel frontend.
     Route::get('/chat/history', [AiController::class, 'history']);
+
+    // Rotta per i messaggi di una specifica conversazione
+    Route::get('/chat/history/{id}', [AiController::class, 'show']);
 
     // Rotta per eliminare la Cronologia delle Chat (DELETE /chat/history)
     Route::delete('/chat/history', [AiController::class, 'destroyHistory']);

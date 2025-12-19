@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ChatMessage;
+use App\Models\Conversation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log; // Aggiunto per un miglior logging
@@ -17,99 +18,116 @@ class AiController extends Controller
         // 1. Validazione input
         $request->validate([
             'message' => 'required|string',
+            'conversation_id' => 'nullable|exists:conversations,id',
         ]);
 
         $prompt = $request->input('message');
+        $conversationId = $request->input('conversation_id');
         $user = $request->user();
 
-        // 1.5 Salvataggio del messaggio dell'utente nel database
+        // 1.2 Gestione della conversazione
+        if (!$conversationId) {
+            $conversation = Conversation::create([
+                'user_id' => $user->id,
+                'title' => 'Nuova conversazione',
+            ]);
+            $conversationId = $conversation->id;
+            $isNewConversation = true;
+        } else {
+            $conversation = Conversation::findOrFail($conversationId);
+            $isNewConversation = false;
+        }
+
+        // 1.5 Salvataggio del messaggio dell'utente
         ChatMessage::create([
             'user_id' => $user->id,
+            'conversation_id' => $conversationId,
             'role' => 'user',
             'content' => $prompt,
         ]);
+
         $apiKey = env('GEMINI_API_KEY');
 
         if (!$apiKey) {
-            // Aggiungiamo un log per gli errori del server
             Log::error('Tentativo di accesso all\'AI fallito: GEMINI_API_KEY mancante.');
             return response()->json([
                 'error' => 'API Key mancante. Configura GEMINI_API_KEY nel file .env',
             ], 500);
         }
 
-        // Definiamo il modello e l'endpoint (Aggiornato a Gemini 3 Flash Preview)
         $model = 'gemini-3-flash-preview'; 
         $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
         try {
-            // 2. Chiamata API
+            // 2. Chiamata API per la risposta
             $response = Http::withHeaders([
                 'Content-Type' => 'application/json',
             ])->post($url, [
                 'contents' => [
-                    [
-                        'parts' => [
-                            ['text' => $prompt]
-                        ]
-                    ]
+                    ['parts' => [['text' => $prompt]]]
                 ]
             ]);
 
-            // 3. Gestione degli errori dall'API Gemini
             if ($response->failed()) {
                 Log::error('Errore API Gemini:', ['body' => $response->body(), 'status' => $response->status()]);
                 
                 $status = $response->status();
-                $errorMessage = $response->json('error.message', 'Errore sconosciuto');
+                $errorData = $response->json('error');
+                $errorMessage = $errorData['message'] ?? 'Il servizio AI ha risposto con un errore.';
 
-                // Se l'errore è un 429 (Too Many Requests), lo passiamo al frontend con un messaggio chiaro.
                 if ($status === 429) {
                     return response()->json([
-                        'error' => 'Limite di richieste raggiunto (Rate Limit). Riprova tra un momento. Dettagli: ' . $errorMessage,
+                        'error' => 'Limite di richieste raggiunto (Quota Exceeded). Riprova tra qualche secondo. Dettaglio: ' . $errorMessage,
                     ], 429);
                 }
 
-                // Per altri errori, restituiamo 502 (Bad Gateway) per indicare un problema col servizio esterno.
                 return response()->json([
-                    'error' => 'Il servizio AI ha risposto con un errore (' . $status . '). Dettagli: ' . $errorMessage,
+                    'error' => 'Errore del servizio AI (' . $status . '): ' . $errorMessage,
                 ], 502); 
             }
 
             $data = $response->json();
-            $candidates = $data['candidates'] ?? null;
-            
-            // 4. Estrazione sicura e controllo dello stato
-            if (empty($candidates) || $candidates[0]['finishReason'] !== 'STOP') {
-                // Gestisce casi come risposte bloccate (Safety Settings) o errori interni di generazione
-                $reason = $candidates[0]['finishReason'] ?? 'UNKNOWN';
-                $message = "La generazione è stata interrotta. Ragione: " . $reason;
-                Log::warning('Generazione Gemini interrotta:', ['reason' => $reason]);
-                
-                return response()->json([
-                    'error' => $message,
-                ], 400); 
-            }
+            $responseText = $data['candidates'][0]['content']['parts'][0]['text'] ?? 'Nessuna risposta ricevuta.';
 
-            $responseText = $candidates[0]['content']['parts'][0]['text'] ?? 'Nessuna risposta testuale ricevuta.';
-
-            // 4.5 Salvataggio della risposta dell'AI nel database
+            // 4.5 Salvataggio della risposta dell'AI
             ChatMessage::create([
                 'user_id' => $user->id,
+                'conversation_id' => $conversationId,
                 'role' => 'assistant',
                 'content' => $responseText,
             ]);
 
-            // 5. Correzione CRITICA per il Frontend React
-            // Il frontend si aspetta 'reply', non 'response'.
+            // 5. Generazione del titolo se è una nuova conversazione
+            if ($isNewConversation) {
+                try {
+                    $titlePrompt = "Genera un titolo brevissimo (massimo 5 parole) per questa conversazione basato su questo messaggio: \"{$prompt}\". Rispondi SOLO con il titolo, senza virgolette o punteggiatura inutile.";
+                    
+                    $titleResponse = Http::post($url, [
+                        'contents' => [
+                            ['parts' => [['text' => $titlePrompt]]]
+                        ]
+                    ]);
+
+                    if ($titleResponse->successful()) {
+                        $titleData = $titleResponse->json();
+                        $generatedTitle = $titleData['candidates'][0]['content']['parts'][0]['text'] ?? 'Conversazione';
+                        $conversation->update(['title' => trim($generatedTitle)]);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Errore generazione titolo:', ['msg' => $e->getMessage()]);
+                }
+            }
+
             return response()->json([
-                'reply' => $responseText, // Corretto il nome del campo
+                'reply' => $responseText,
+                'conversation_id' => $conversationId,
+                'title' => $conversation->title,
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Errore PHP durante la comunicazione con AI:', ['exception' => $e->getMessage()]);
+            Log::error('Errore comunicazione con AI:', ['exception' => $e->getMessage()]);
             return response()->json([
-                'error' => 'Errore interno del server: ' . $e->getMessage(),
+                'error' => 'Errore interno del server.',
             ], 500);
         }
     }
@@ -120,14 +138,30 @@ class AiController extends Controller
      */
     public function history(Request $request)
     {
-        // Recuperiamo i messaggi dal database per l'utente loggato.
-        $history = $request->user()->chatMessages()
-            ->orderBy('created_at', 'asc')
-            ->get(['role', 'content as text', 'created_at']);
+        $conversations = $request->user()->conversations()
+            ->orderBy('updated_at', 'desc')
+            ->get(['id', 'title', 'created_at']);
 
         return response()->json([
-            'history' => $history,
-            'message' => 'Cronologia caricata con successo.'
+            'conversations' => $conversations,
+            'message' => 'Lista conversazioni caricata.'
+        ]);
+    }
+
+    /**
+     * Recupera i messaggi di una specifica conversazione.
+     */
+    public function show($id, Request $request)
+    {
+        $conversation = $request->user()->conversations()->findOrFail($id);
+        
+        $messages = $conversation->messages()
+            ->orderBy('created_at', 'asc')
+            ->get(['role', 'content as text', 'id']);
+
+        return response()->json([
+            'messages' => $messages,
+            'title' => $conversation->title,
         ]);
     }
 
@@ -138,11 +172,11 @@ class AiController extends Controller
     {
         $user = $request->user();
         
-        // Eliminiamo tutti i messaggi associati all'utente
-        $user->chatMessages()->delete();
+        // Eliminiamo tutte le conversazioni e i relativi messaggi
+        $user->conversations()->delete();
 
         return response()->json([
-            'message' => 'Cronologia eliminata correttamente.'
+            'message' => 'Tutta la cronologia è stata eliminata.'
         ]);
     }
 }

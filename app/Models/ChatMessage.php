@@ -11,9 +11,18 @@ class ChatMessage extends Model
 
     protected $fillable = [
         'user_id',
+        'conversation_id',
         'role',
         'content',
     ];
+
+    /**
+     * Get the conversation that owns the message.
+     */
+    public function conversation()
+    {
+        return $this->belongsTo(Conversation::class);
+    }
 
     /**
      * Get the user that owns the message.

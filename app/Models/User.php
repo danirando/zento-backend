@@ -44,6 +44,14 @@ class User extends Authenticatable
     ];
 
     /**
+     * Get the conversations for the user.
+     */
+    public function conversations()
+    {
+        return $this->hasMany(Conversation::class);
+    }
+
+    /**
      * Get the chat messages for the user.
      */
     public function chatMessages()
