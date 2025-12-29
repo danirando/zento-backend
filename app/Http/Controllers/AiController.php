@@ -59,43 +59,65 @@ class AiController extends Controller
         $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
         try {
-            // 2. Chiamata API per la risposta con TIMEOUT per evitare crash
-            $response = Http::withHeaders([
-                'Content-Type' => 'application/json',
-            ])->timeout(30)->post($url, [
-                'contents' => [
-                    ['parts' => [['text' => $prompt]]]
-                ]
-            ]);
-
-            if ($response->failed()) {
-                Log::error('Errore API Gemini:', ['body' => $response->body(), 'status' => $response->status()]);
+            // --- OTTIMIZZAZIONE 1: Intercettore locale per saluti comuni ---
+            $lowerPrompt = mb_strtolower(trim($prompt));
+            $localResponses = [
+                'ciao' => "Ciao! Come posso aiutarti oggi?",
+                'ehi' => "Ehi! In cosa posso esserti utile?",
+                'hello' => "Hello! How can I help you today?",
+                'chi sei' => "Sono Zento, la tua assistente AI. Come posso aiutarti?",
+                'chi sei?' => "Sono Zento, la tua assistente AI. Come posso aiutarti?",
+                'come stai' => "Sto bene, grazie! Pronta ad aiutarmi. E tu?",
+                'come stai?' => "Sto bene, grazie! Pronta ad aiutarmi. E tu?",
                 
-                $status = $response->status();
-                $errorData = $response->json('error');
-                $errorMessage = $errorData['message'] ?? 'Il servizio AI ha risposto con un errore.';
+                // Suggerimenti della dashboard (Case-insensitive match handled by mb_strtolower above)
+                "spiegami come funziona l'intelligenza artificiale" => "L'intelligenza artificiale (IA) è un ramo dell'informatica che si occupa di creare sistemi capaci di simulare processi cognitivi umani, come l'apprendimento, il ragionamento e la risoluzione di problemi. Funziona principalmente elaborando enormi quantità di dati attraverso algoritmi di 'machine learning', che permettono al computer di identificare schemi e migliorare le proprie prestazioni nel tempo senza essere esplicitamente programmato per ogni singola attività.",
+                "aiutami a scrivere un'email professionale" => "Certamente! Ecco una bozza standard:\n\nOggetto: [Oggetto dell'email]\n\nGentile [Nome del destinatario],\n\nspero che questa email la trovi bene. Le scrivo in merito a [Motivo dell'email].\n\n[Dettagli aggiuntivi...]\n\nResto in attesa di un suo gentile riscontro.\n\nCordiali saluti,\n[Tuo Nome]",
+                "dammi idee per un progetto creativo" => "Ecco tre idee interessanti:\n1. **App di Micro-Journaling**: Un'app che ti chiede solo una parola al giorno per descrivere il tuo umore.\n2. **Galleria d'Arte Virtuale**: Un sito web dove artisti locali possono esporre le proprie opere in 3D.\n3. **Ricettario Anti-Spreco**: Un sistema che genera ricette basandosi solo sugli ingredienti rimasti nel frigorifero.",
+                "riassumi le ultime notizie di tecnologia" => "Oggi nel mondo tech si parla molto di:\n- **Progressi nei modelli LLM**: Nuovi aggiornamenti che rendono le AI ancora più veloci ed efficienti.\n- **Sostenibilità nei Data Center**: Aziende che testano nuovi sistemi di raffreddamento a basso impatto.\n- **Realtà Aumentata**: Lancio di nuovi dispositivi indossabili sempre più leggeri e potenti.",
+            ];
 
-                if ($status === 429) {
+            if (collect(array_keys($localResponses))->contains($lowerPrompt)) {
+                $responseText = $localResponses[$lowerPrompt];
+            } else {
+                // Se non è un saluto comune, procediamo con Gemini
+                $response = Http::withHeaders([
+                    'Content-Type' => 'application/json',
+                ])->timeout(30)->post($url, [
+                    'contents' => [
+                        ['parts' => [['text' => $prompt]]]
+                    ]
+                ]);
+
+                if ($response->failed()) {
+                    Log::error('Errore API Gemini:', ['body' => $response->body(), 'status' => $response->status()]);
+                    
+                    $status = $response->status();
+                    $errorData = $response->json('error');
+                    $errorMessage = $errorData['message'] ?? 'Il servizio AI ha risposto con un errore.';
+
+                    if ($status === 429) {
+                        return response()->json([
+                            'error' => 'Limite di richieste raggiunto (Quota Exceeded). Riprova tra qualche secondo.',
+                        ], 429);
+                    }
+
+                    if ($status === 404) {
+                        return response()->json([
+                            'error' => 'Modello non trovato. Verificare la configurazione del controller.',
+                        ], 500);
+                    }
+
                     return response()->json([
-                        'error' => 'Limite di richieste raggiunto (Quota Exceeded). Riprova tra qualche secondo.',
-                    ], 429);
+                        'error' => 'Errore del servizio AI (' . $status . '): ' . $errorMessage,
+                    ], 502); 
                 }
 
-                if ($status === 404) {
-                    return response()->json([
-                        'error' => 'Modello non trovato. Verificare la configurazione del controller.',
-                    ], 500);
-                }
-
-                return response()->json([
-                    'error' => 'Errore del servizio AI (' . $status . '): ' . $errorMessage,
-                ], 502); 
+                $data = $response->json();
+                $responseText = $data['candidates'][0]['content']['parts'][0]['text'] ?? 'Nessuna risposta ricevuta.';
             }
 
-            $data = $response->json();
-            $responseText = $data['candidates'][0]['content']['parts'][0]['text'] ?? 'Nessuna risposta ricevuta.';
-
-            // 4.5 Salvataggio della risposta dell'AI
+            // 4.5 Salvataggio della risposta dell'AI (sia locale che da Gemini)
             ChatMessage::create([
                 'user_id' => $user->id,
                 'conversation_id' => $conversationId,
@@ -103,29 +125,14 @@ class AiController extends Controller
                 'content' => $responseText,
             ]);
 
-            // 5. Generazione del titolo SOLO per le nuove conversazioni per risparmiare quota API
+            // --- OTTIMIZZAZIONE 2: Generazione titolo via substring (risparmia 1 chiamata API) ---
             if ($isNewConversation) {
-                try {
-                    $titlePrompt = "Genera un titolo brevissimo (massimo 5 parole) per questa conversazione basato su questo messaggio: \"{$prompt}\". Rispondi SOLO con il titolo, senza virgolette o punteggiatura inutile.";
-                    
-                    $titleResponse = Http::withHeaders([
-                        'Content-Type' => 'application/json',
-                    ])->timeout(15)->post($url, [
-                        'contents' => [
-                            ['parts' => [['text' => $titlePrompt]]]
-                        ]
-                    ]);
-
-                    if ($titleResponse->successful()) {
-                        $titleData = $titleResponse->json();
-                        $generatedTitle = $titleData['candidates'][0]['content']['parts'][0]['text'] ?? 'Conversazione';
-                        $conversation->update(['title' => trim($generatedTitle)]);
-                    }
-                } catch (\Exception $e) {
-                    Log::warning('Errore generazione titolo (non riproveremo per questa chat):', ['msg' => $e->getMessage()]);
-                    // Se fallisce una volta, evitiamo di riprovare sui messaggi successivi per non sprecare quota
-                    $conversation->update(['title' => 'Conversazione']);
+                $cleanPrompt = strip_tags($prompt);
+                $newTitle = mb_substr($cleanPrompt, 0, 35);
+                if (mb_strlen($cleanPrompt) > 35) {
+                    $newTitle .= '...';
                 }
+                $conversation->update(['title' => $newTitle]);
             }
 
             return response()->json([
