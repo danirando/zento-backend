@@ -14,6 +14,11 @@ class ChatMessage extends Model
         'conversation_id',
         'role',
         'content',
+        'is_saved',
+    ];
+
+    protected $casts = [
+        'is_saved' => 'boolean',
     ];
 
     /**

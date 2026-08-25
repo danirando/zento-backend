@@ -2,14 +2,12 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-
 // --- Controllori di Base (Assicurati che i percorsi siano corretti) ---
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\AiController;
-
 // 🚨 IMPORT DEL CONTROLLER DI AUTENTICAZIONE 🚨
 // Utilizziamo il controller che abbiamo creato per gestire la logica di login/logout.
-use App\Http\Controllers\AuthApiController; 
+use App\Http\Controllers\AuthApiController;
 
 /*
 |--------------------------------------------------------------------------
@@ -22,13 +20,13 @@ use App\Http\Controllers\AuthApiController;
 
 // 🚨 ROTTA DI LOGIN (POST /login) 🚨
 // Questa rotta risolve il tuo errore 405 Method Not Allowed.
-Route::post('/login', [AuthApiController::class, 'login']); 
+Route::post('/login', [AuthApiController::class, 'login']);
 
 
 // --- 2. ROTTE PROTETTE (RICHIEDONO auth:sanctum) ---
 // Raggruppiamo tutte le rotte che necessitano che l'utente sia loggato.
 Route::middleware(['auth:sanctum'])->group(function () {
-    
+
     // Rotta per i dati dell'utente (GET /user)
     Route::get('/user', function (Request $request) {
         return $request->user();
@@ -47,9 +45,12 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Rotta per i messaggi di una specifica conversazione
     Route::get('/chat/history/{id}', [AiController::class, 'show']);
 
+    // Rotta per salvare/rimuovere un messaggio come "preferito"
+    Route::post('/chat/save-message', [AiController::class, 'saveMessage']);
+
     // Rotta per eliminare la Cronologia delle Chat (DELETE /chat/history)
     Route::delete('/chat/history', [AiController::class, 'destroyHistory']);
-    
+
     // Rotta per il Logout (POST /logout)
     Route::post('/logout', [AuthApiController::class, 'logout']);
 

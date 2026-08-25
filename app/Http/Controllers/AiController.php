@@ -17,7 +17,7 @@ class AiController extends Controller
     {
         // 1. Validazione input
         $request->validate([
-            'message' => 'required|string',
+            'message' => 'required|string|max:4000',
             'conversation_id' => 'nullable|exists:conversations,id',
         ]);
 
@@ -34,7 +34,9 @@ class AiController extends Controller
             $conversationId = $conversation->id;
             $isNewConversation = true;
         } else {
-            $conversation = Conversation::findOrFail($conversationId);
+            // Scoped all'utente autenticato: evita che un utente possa scrivere
+            // o leggere il titolo di conversazioni appartenenti ad altri utenti.
+            $conversation = $user->conversations()->findOrFail($conversationId);
             $isNewConversation = false;
         }
 
@@ -55,7 +57,7 @@ class AiController extends Controller
             ], 500);
         }
 
-        $model = 'gemini-flash-latest'; 
+        $model = 'gemini-3.6-flash';
         $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
         try {
@@ -69,7 +71,7 @@ class AiController extends Controller
                 'chi sei?' => "Sono Zento, la tua assistente AI. Come posso aiutarti?",
                 'come stai' => "Sto bene, grazie! Pronta ad aiutarmi. E tu?",
                 'come stai?' => "Sto bene, grazie! Pronta ad aiutarmi. E tu?",
-                
+
                 // Suggerimenti della dashboard (Case-insensitive match handled by mb_strtolower above)
                 "spiegami come funziona l'intelligenza artificiale" => "L'intelligenza artificiale (IA) è un ramo dell'informatica che si occupa di creare sistemi capaci di simulare processi cognitivi umani, come l'apprendimento, il ragionamento e la risoluzione di problemi. Funziona principalmente elaborando enormi quantità di dati attraverso algoritmi di 'machine learning', che permettono al computer di identificare schemi e migliorare le proprie prestazioni nel tempo senza essere esplicitamente programmato per ogni singola attività.",
                 "aiutami a scrivere un'email professionale" => "Certamente! Ecco una bozza standard:\n\nOggetto: [Oggetto dell'email]\n\nGentile [Nome del destinatario],\n\nspero che questa email la trovi bene. Le scrivo in merito a [Motivo dell'email].\n\n[Dettagli aggiuntivi...]\n\nResto in attesa di un suo gentile riscontro.\n\nCordiali saluti,\n[Tuo Nome]",
@@ -91,7 +93,7 @@ class AiController extends Controller
 
                 if ($response->failed()) {
                     Log::error('Errore API Gemini:', ['body' => $response->body(), 'status' => $response->status()]);
-                    
+
                     $status = $response->status();
                     $errorData = $response->json('error');
                     $errorMessage = $errorData['message'] ?? 'Il servizio AI ha risposto con un errore.';
@@ -110,7 +112,7 @@ class AiController extends Controller
 
                     return response()->json([
                         'error' => 'Errore del servizio AI (' . $status . '): ' . $errorMessage,
-                    ], 502); 
+                    ], 502);
                 }
 
                 $data = $response->json();
@@ -156,7 +158,6 @@ class AiController extends Controller
 
     /**
      * Recupera la cronologia delle chat per l'utente loggato.
-     * Al momento restituisce una lista vuota o dati di mock.
      */
     public function history(Request $request)
     {
@@ -176,14 +177,42 @@ class AiController extends Controller
     public function show($id, Request $request)
     {
         $conversation = $request->user()->conversations()->findOrFail($id);
-        
+
         $messages = $conversation->messages()
             ->orderBy('created_at', 'asc')
-            ->get(['role', 'content as text', 'id']);
+            ->get(['role', 'content as text', 'id', 'is_saved'])
+            ->map(fn ($m) => [
+                'id' => $m->id,
+                'role' => $m->role,
+                'sender' => $m->role === 'user' ? 'user' : 'ai',
+                'text' => $m->text,
+                'isSaved' => $m->is_saved,
+            ]);
 
         return response()->json([
             'messages' => $messages,
             'title' => $conversation->title,
+        ]);
+    }
+
+    /**
+     * Segna/rimuove il flag "salvato" su un messaggio dell'utente autenticato.
+     */
+    public function saveMessage(Request $request)
+    {
+        $request->validate([
+            'message_id' => 'required|exists:chat_messages,id',
+        ]);
+
+        // Scoped all'utente: un utente può segnare come salvato solo un
+        // messaggio che gli appartiene.
+        $message = $request->user()->chatMessages()->findOrFail($request->input('message_id'));
+
+        $message->update(['is_saved' => !$message->is_saved]);
+
+        return response()->json([
+            'message_id' => $message->id,
+            'is_saved' => $message->is_saved,
         ]);
     }
 
@@ -193,7 +222,7 @@ class AiController extends Controller
     public function destroyHistory(Request $request)
     {
         $user = $request->user();
-        
+
         // Eliminiamo tutte le conversazioni e i relativi messaggi
         $user->conversations()->delete();
 
